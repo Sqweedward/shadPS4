@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <shared_mutex>
 #include <utility>
 #include "common/adaptive_mutex.h"
 #include "common/assert.h"
@@ -16,6 +17,7 @@
 #include "core/signals.h"
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/tracking_exclusions.h"
 
 #ifndef _WIN64
 #include <sys/mman.h>
@@ -107,6 +109,124 @@ struct PageManager::Impl {
 
     virtual void Protect(VAddr address, size_t size, Core::MemoryPermission perms) = 0;
 
+    void ApplyProtection(VAddr address, size_t size, Core::MemoryPermission perms) {
+        if (True(perms & Core::MemoryPermission::Write)) {
+            Protect(address, size, perms);
+            return;
+        }
+        // Held across the protection call so an exclusion cannot be registered in between.
+        std::shared_lock lock{exclusions_mutex};
+        ProtectExcludingExclusions(address, size, perms);
+    }
+
+    void ProtectExcludingExclusions(VAddr address, size_t size, Core::MemoryPermission perms) {
+        if (!exclusions.ForEachTracked(
+                address, size, [&](VAddr begin, u64 length) { Protect(begin, length, perms); })) {
+            Protect(address, size, perms);
+        }
+    }
+
+    void Exclude(const void* owner, VAddr address, u64 size) {
+        if (size == 0) {
+            return;
+        }
+        const u64 page_start = address >> PM_PAGE_BITS;
+        const u64 page_end = Common::DivCeil(address + size, PM_PAGE_SIZE);
+        EnsurePages(page_start << PM_PAGE_BITS, page_end << PM_PAGE_BITS);
+
+        LockPages(page_start, page_end);
+        {
+            std::unique_lock lock{exclusions_mutex};
+            exclusions.Add(owner, address, size);
+
+            ForEachPageRun(page_start, page_end, [&](u64 first_page, u64 pages, auto perms) {
+                if (perms != Core::MemoryPermission::ReadWrite) {
+                    Protect(first_page << PM_PAGE_BITS, pages << PM_PAGE_BITS,
+                            Core::MemoryPermission::ReadWrite);
+                }
+            });
+        }
+        UnlockPages(page_start, page_end);
+    }
+
+    void Include(const void* owner) {
+        std::pair<VAddr, VAddr> range;
+        {
+            std::shared_lock lock{exclusions_mutex};
+            range = exclusions.RangeOf(owner);
+        }
+        if (range.first == range.second) {
+            return;
+        }
+        const u64 page_start = range.first >> PM_PAGE_BITS;
+        const u64 page_end = range.second >> PM_PAGE_BITS;
+
+        LockPages(page_start, page_end);
+        {
+            std::unique_lock lock{exclusions_mutex};
+            exclusions.Remove(owner);
+
+            ForEachPageRun(page_start, page_end, [&](u64 first_page, u64 pages, auto perms) {
+                if (perms != Core::MemoryPermission::ReadWrite) {
+                    ProtectExcludingExclusions(first_page << PM_PAGE_BITS, pages << PM_PAGE_BITS,
+                                               perms);
+                }
+            });
+        }
+        UnlockPages(page_start, page_end);
+    }
+
+    void DropExclusions(VAddr address, u64 size) {
+        std::unique_lock lock{exclusions_mutex};
+        exclusions.RemoveOverlapping(address, size);
+    }
+
+    void LockPages(u64 page_start, u64 page_end) {
+        for (u64 page = page_start; page != page_end; ++page) {
+            if (cached_pages.find(page)) {
+                locks[page].lock();
+            }
+        }
+    }
+
+    void UnlockPages(u64 page_start, u64 page_end) {
+        for (u64 page = page_start; page != page_end; ++page) {
+            if (auto* lock = locks.find(page)) {
+                lock->unlock();
+            }
+        }
+    }
+
+    template <typename Func>
+    void ForEachPageRun(u64 page_start, u64 page_end, Func&& func) {
+        u64 run_begin = 0;
+        u64 run_pages = 0;
+        Core::MemoryPermission run_perms{};
+        const auto flush = [&] {
+            if (run_pages != 0) {
+                func(run_begin, run_pages, run_perms);
+                run_pages = 0;
+            }
+        };
+        for (u64 page = page_start; page != page_end; ++page) {
+            const PageState* state = cached_pages.find(page);
+            if (!state) {
+                flush();
+                continue;
+            }
+            const auto perms = state->Perms();
+            if (run_pages != 0 && perms != run_perms) {
+                flush();
+            }
+            if (run_pages == 0) {
+                run_begin = page;
+                run_perms = perms;
+            }
+            ++run_pages;
+        }
+        flush();
+    }
+
     void EnsurePages(VAddr begin, VAddr end) {
         end = std::min(end, VAddr{1} << ADDRESS_BITS) - 1;
         const size_t start_page = begin >> PM_PAGE_BITS;
@@ -126,7 +246,7 @@ struct PageManager::Impl {
 
         const auto release_pending = [&] {
             if (range_pages > 0) {
-                Protect(range_begin << PM_PAGE_BITS, range_pages << PM_PAGE_BITS, perms);
+                ApplyProtection(range_begin << PM_PAGE_BITS, range_pages << PM_PAGE_BITS, perms);
                 range_pages = 0;
                 potential_pages = 0;
             }
@@ -201,7 +321,7 @@ struct PageManager::Impl {
 
         const auto release_pending = [&] {
             if (range_pages > 0) {
-                Protect(range_begin << PM_PAGE_BITS, range_pages << PM_PAGE_BITS, perms);
+                ApplyProtection(range_begin << PM_PAGE_BITS, range_pages << PM_PAGE_BITS, perms);
                 range_pages = 0;
                 potential_pages = 0;
             }
@@ -276,6 +396,10 @@ struct PageManager::Impl {
         static constexpr bool NULL_CHECK = false;
     };
     Common::MultiLevelPageTable<MutexTraits> locks;
+
+    // Lock order: page locks, then this mutex.
+    std::shared_mutex exclusions_mutex;
+    TrackingExclusions exclusions{PM_PAGE_SIZE};
 };
 
 #ifdef __linux__
@@ -469,6 +593,18 @@ void PageManager::OnGpuMap(VAddr address, size_t size) {
 
 void PageManager::OnGpuUnmap(VAddr address, size_t size) {
     impl->OnUnmap(address, size);
+}
+
+void PageManager::ExcludeFromTracking(const void* owner, VAddr address, u64 size) {
+    impl->Exclude(owner, address, size);
+}
+
+void PageManager::IncludeInTracking(const void* owner) {
+    impl->Include(owner);
+}
+
+void PageManager::DropExclusions(VAddr address, u64 size) {
+    impl->DropExclusions(address, size);
 }
 
 void PageManager::UpdatePageWatchers(VAddr addr, u64 size, PageOp write_op) const {
