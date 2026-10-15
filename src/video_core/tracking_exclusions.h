@@ -17,7 +17,9 @@ namespace VideoCore {
 // the access violation handler runs on the faulting thread's stack, so a write to a
 // protected stack cannot be handled and kills the process. Ranges are kept per owner
 // because neighbouring stacks share boundary pages and stack memory gets reused.
-// Whole pages are excluded. No locking, callers synchronise access.
+// Whole pages are excluded, except that the first page stays tracked when the stack only covers
+// its tail: stacks grow downwards and only reach that page on overflow. No locking, callers
+// synchronise access.
 class TrackingExclusions {
     using Owners = std::set<const void*>;
     using CoverageMap = boost::icl::interval_map<VAddr, Owners>;
@@ -28,8 +30,10 @@ public:
 
     std::pair<VAddr, VAddr> Add(const void* owner, VAddr addr, u64 size) {
         Remove(owner);
-        const VAddr begin = Common::AlignDown(addr, page_size);
+        const VAddr first_page = Common::AlignDown(addr, page_size);
         const VAddr end = Common::AlignUp(addr + size, page_size);
+        const bool partial_first_page = addr != first_page && first_page + page_size < end;
+        const VAddr begin = partial_first_page ? first_page + page_size : first_page;
         const Interval interval = Interval::right_open(begin, end);
         coverage.add(std::make_pair(interval, Owners{owner}));
         owners.emplace(owner, interval);

@@ -137,14 +137,15 @@ struct PageManager::Impl {
         LockPages(page_start, page_end);
         {
             std::unique_lock lock{exclusions_mutex};
-            exclusions.Add(owner, address, size);
+            const auto [begin, end] = exclusions.Add(owner, address, size);
 
-            ForEachPageRun(page_start, page_end, [&](u64 first_page, u64 pages, auto perms) {
-                if (perms != Core::MemoryPermission::ReadWrite) {
-                    Protect(first_page << PM_PAGE_BITS, pages << PM_PAGE_BITS,
-                            Core::MemoryPermission::ReadWrite);
-                }
-            });
+            ForEachPageRun(begin >> PM_PAGE_BITS, end >> PM_PAGE_BITS,
+                           [&](u64 first_page, u64 pages, auto perms) {
+                               if (perms != Core::MemoryPermission::ReadWrite) {
+                                   Protect(first_page << PM_PAGE_BITS, pages << PM_PAGE_BITS,
+                                           Core::MemoryPermission::ReadWrite);
+                               }
+                           });
         }
         UnlockPages(page_start, page_end);
     }
