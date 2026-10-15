@@ -129,6 +129,25 @@ u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
     return clamped_size;
 }
 
+void MemoryManager::ExcludeFromGpuTracking(const void* owner, VAddr addr, u64 size) {
+    if (!rasterizer || size == 0 || !IsValidGpuMapping(addr, size)) {
+        return;
+    }
+    {
+        std::shared_lock lk{mutex};
+        if (!IsValidMapping(addr, size)) {
+            return;
+        }
+    }
+    rasterizer->ExcludeFromTracking(owner, addr, size);
+}
+
+void MemoryManager::IncludeInGpuTracking(const void* owner) {
+    if (rasterizer) {
+        rasterizer->IncludeInTracking(owner);
+    }
+}
+
 void MemoryManager::SetPrtArea(u32 id, VAddr address, u64 size) {
     PrtArea& area = prt_areas[id];
     if (area.mapped) {

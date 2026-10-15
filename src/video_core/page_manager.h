@@ -38,6 +38,15 @@ public:
     /// Unregister a range of gpu memory that was unmapped.
     void OnGpuUnmap(VAddr address, size_t size);
 
+    /// Excludes the pages of a guest stack from write protection on behalf of `owner`.
+    void ExcludeFromTracking(const void* owner, VAddr address, u64 size);
+
+    /// Lifts the exclusion of `owner`.
+    void IncludeInTracking(const void* owner);
+
+    /// Drops the exclusions inside memory that is being unmapped.
+    void DropExclusions(VAddr address, u64 size);
+
     /// Updates watches in the pages touching the specified region.
     void UpdatePageWatchers(VAddr addr, u64 size, PageOp write_op) const;
 

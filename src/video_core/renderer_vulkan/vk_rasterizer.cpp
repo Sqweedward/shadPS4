@@ -1309,9 +1309,18 @@ void Rasterizer::RegisterMemory(VAddr addr, u64 size) {
     page_manager.OnGpuMap(addr, size);
 }
 
+void Rasterizer::ExcludeFromTracking(const void* owner, VAddr addr, u64 size) {
+    page_manager.ExcludeFromTracking(owner, addr, size);
+}
+
+void Rasterizer::IncludeInTracking(const void* owner) {
+    page_manager.IncludeInTracking(owner);
+}
+
 void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
     buffer_cache.InvalidateMemory(addr, size);
     texture_cache.UnmapMemory(addr, size);
+    page_manager.DropExclusions(addr, size);
     {
         std::scoped_lock lock{mapped_ranges_mutex};
         mapped_ranges -= decltype(mapped_ranges)::interval_type::right_open(addr, addr + size);

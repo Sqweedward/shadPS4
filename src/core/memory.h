@@ -285,6 +285,9 @@ public:
 
     s32 VirtualQuery(VAddr addr, s32 flags, ::Libraries::Kernel::OrbisVirtualQueryInfo* info);
 
+    void ExcludeFromGpuTracking(const void* owner, VAddr addr, u64 size);
+    void IncludeInGpuTracking(const void* owner);
+
     s32 DirectMemoryQuery(PAddr addr, bool find_next,
                           ::Libraries::Kernel::OrbisQueryInfo* out_info);
 

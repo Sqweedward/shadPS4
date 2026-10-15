@@ -19,6 +19,9 @@ int ThreadState::CreateStack(PthreadAttr* attr) {
     if ((attr->stackaddr_attr) != nullptr) {
         attr->guardsize_attr = 0;
         attr->flags |= PthreadAttrFlags::StackUser;
+        Core::Memory::Instance()->ExcludeFromGpuTracking(
+            attr->stackaddr_attr, reinterpret_cast<VAddr>(attr->stackaddr_attr),
+            attr->stacksize_attr);
         return 0;
     }
 
@@ -120,7 +123,11 @@ int ThreadState::CreateStack(PthreadAttr* attr) {
 }
 
 void ThreadState::FreeStack(PthreadAttr* attr) {
-    if (!attr || True(attr->flags & PthreadAttrFlags::StackUser) || !attr->stackaddr_attr) {
+    if (!attr || !attr->stackaddr_attr) {
+        return;
+    }
+    if (True(attr->flags & PthreadAttrFlags::StackUser)) {
+        Core::Memory::Instance()->IncludeInGpuTracking(attr->stackaddr_attr);
         return;
     }
 

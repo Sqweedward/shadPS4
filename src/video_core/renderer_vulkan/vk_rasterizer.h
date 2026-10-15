@@ -79,6 +79,9 @@ public:
     void RegisterMemory(VAddr addr, u64 size);
     void UnmapMemory(VAddr addr, u64 size);
 
+    void ExcludeFromTracking(const void* owner, VAddr addr, u64 size);
+    void IncludeInTracking(const void* owner);
+
     u64 Flush();
     void Finish();
     void OnSubmit();
