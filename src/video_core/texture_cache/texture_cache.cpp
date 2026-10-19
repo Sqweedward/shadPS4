@@ -923,6 +923,7 @@ void TextureCache::RegisterImage(ImageId image_id) {
             .size = info.guest_size,
             .id = image_id,
         });
+        occupied_pages[page / 64].fetch_or(1ULL << (page % 64));
     });
 }
 
@@ -942,6 +943,9 @@ void TextureCache::UnregisterImage(ImageId image_id) {
         ASSERT_MSG(vector_it != entries.end(), "Unregistering unregistered image in page={:#x}",
                    page << Traits::PAGE_BITS);
         entries.erase(vector_it);
+        if (entries.empty()) {
+            occupied_pages[page / 64].fetch_and(~(1ULL << (page % 64)));
+        }
     });
 }
 

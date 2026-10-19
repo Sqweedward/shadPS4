@@ -3,10 +3,13 @@
 
 #pragma once
 
+#include <atomic>
+#include <bit>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <unordered_set>
+#include <vector>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
 #include <boost/container/small_vector.hpp>
@@ -289,7 +292,7 @@ public:
         using FuncReturn = typename std::invoke_result<Func, ImageId, Image&>::type;
         static constexpr bool BOOL_BREAK = std::is_same_v<FuncReturn, bool>;
         const u64 first_page = cpu_addr >> Traits::PAGE_BITS;
-        ForEachPage(cpu_addr, size, [this, first_page, cpu_addr, size, func](u64 page) {
+        ForEachOccupiedPage(cpu_addr, size, [this, first_page, cpu_addr, size, func](u64 page) {
             const auto it = page_table.find(page);
             if (it == nullptr) {
                 if constexpr (BOOL_BREAK) {
@@ -352,6 +355,30 @@ private:
         }
     }
 
+    /// Iterate over the page indices in a range that have at least one registered image
+    template <typename Func>
+    void ForEachOccupiedPage(VAddr addr, size_t size, Func&& func) const {
+        if (size == 0) {
+            return;
+        }
+        const u64 first_page = addr >> Traits::PAGE_BITS;
+        const u64 last_page = (addr + size - 1) >> Traits::PAGE_BITS;
+        const u64 last_word = last_page / 64;
+        for (u64 word = first_page / 64; word <= last_word; ++word) {
+            u64 bits = occupied_pages[word].load(std::memory_order_relaxed);
+            if (word == first_page / 64) {
+                bits &= ~0ULL << (first_page % 64);
+            }
+            if (word == last_word) {
+                bits &= ~0ULL >> (63 - last_page % 64);
+            }
+            while (bits != 0) {
+                func(word * 64 + std::countr_zero(bits));
+                bits &= bits - 1;
+            }
+        }
+    }
+
     /// Copies image memory back to CPU.
     void DownloadImageMemory(ImageId image_id,
                              DownloadMemoryFlags flags = DownloadMemoryFlags::None);
@@ -402,6 +429,8 @@ private:
     BufferCache& buffer_cache;
     PageManager& page_manager;
     PageTable page_table;
+    std::vector<std::atomic<u64>> occupied_pages = std::vector<std::atomic<u64>>(
+        (1ULL << (Traits::ADDRESS_SPACE_BITS - Traits::PAGE_BITS)) / 64);
     Common::SlotVector<Image> slot_images;
     Common::SlotVector<ImageView> slot_image_views;
     Common::SlotVector<Sampler> slot_samplers;
