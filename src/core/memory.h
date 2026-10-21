@@ -253,6 +253,7 @@ public:
     void SetPrtArea(u32 id, VAddr address, u64 size);
 
     void CopySparseMemory(VAddr source, u8* dest, u64 size);
+    u64 HashSparseMemory(VAddr source, u64 size);
 
     bool TryWriteBacking(void* address, const void* data, u64 size);
 

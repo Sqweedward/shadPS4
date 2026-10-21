@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <xxhash.h>
+
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/debug.h"
@@ -159,6 +161,27 @@ void MemoryManager::CopySparseMemory(VAddr virtual_addr, u8* dest, u64 size) {
         virtual_addr += copy_size;
         dest += copy_size;
     }
+}
+
+u64 MemoryManager::HashSparseMemory(VAddr virtual_addr, u64 size) {
+    static constexpr u64 PageSize = 16_KB;
+    static const std::array<u8, PageSize> zeros{};
+    thread_local XXH3_state_t* state = XXH3_createState();
+    const auto& backing_pages = impl.BackingPages();
+    XXH3_64bits_reset(state);
+    while (size) {
+        const u64 page = virtual_addr >> 14;
+        const u64 offset_in_page = virtual_addr % PageSize;
+        const u64 hash_size = std::min<u64>(PageSize - offset_in_page, size);
+        if (auto* entry = backing_pages.find(page); entry && *entry) {
+            XXH3_64bits_update(state, *entry + offset_in_page, hash_size);
+        } else {
+            XXH3_64bits_update(state, zeros.data(), hash_size);
+        }
+        size -= hash_size;
+        virtual_addr += hash_size;
+    }
+    return XXH3_64bits_digest(state);
 }
 
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
