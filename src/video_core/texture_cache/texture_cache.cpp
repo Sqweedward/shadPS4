@@ -209,10 +209,7 @@ void TextureCache::InvalidateMemoryFromGPU(VAddr address, size_t max_size) {
 }
 
 static u64 HashGuestMemory(VAddr addr, u64 size) {
-    thread_local std::vector<u8> scratch;
-    scratch.resize(size);
-    Core::Memory::Instance()->CopySparseMemory(addr, scratch.data(), size);
-    return XXH3_64bits(scratch.data(), size);
+    return Core::Memory::Instance()->HashSparseMemory(addr, size);
 }
 
 void TextureCache::MarkAsMaybeGpuDirty(VAddr addr, size_t size) {
